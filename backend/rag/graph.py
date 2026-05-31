@@ -4,6 +4,7 @@ from typing import Any
 from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
@@ -114,14 +115,14 @@ def build_graph(video_metadata: dict[str, Any]):
         docs = retriever.invoke(query)
         return {"retrieved_docs": docs}
 
-    def generate(state: RAGState) -> dict[str, list[AIMessage]]:
+    def generate(state: RAGState, config: RunnableConfig) -> dict[str, list[AIMessage]]:
         retrieved_docs = state.get("retrieved_docs") or []
         system_prompt = _build_system_prompt(retrieved_docs, video_metadata)
 
         conversation = [SystemMessage(content=system_prompt)] + list(state["messages"])
 
         content = ""
-        for chunk in llm.stream(conversation):
+        for chunk in llm.stream(conversation, config=config):
             if chunk.content:
                 content += chunk.content
 
