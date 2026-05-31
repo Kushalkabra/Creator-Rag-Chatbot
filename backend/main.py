@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any
 
@@ -9,12 +10,23 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
+from ingestion.errors import (
+    IngestionError,
+    InstagramIngestionError,
+    InstagramTimeoutError,
+    InvalidInstagramURLError,
+    InvalidYouTubeURLError,
+    YouTubeAPIError,
+    YouTubeTranscriptError,
+)
 from ingestion.instagram import get_instagram_data
 from ingestion.youtube import get_youtube_data
 from rag.embedder import embed_video
 from rag.graph import build_graph
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
+
+INSTAGRAM_INGEST_TIMEOUT_SECONDS = 120
 
 app = FastAPI()
 
@@ -95,6 +107,18 @@ def _docs_to_sources(docs: list[Any]) -> list[dict[str, Any]]:
     return sources
 
 
+def _run_instagram_ingest(url: str, video_label: str) -> dict[str, Any]:
+    """Run Instagram ingestion in a worker thread with a hard timeout."""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(get_instagram_data, url, video_label)
+        try:
+            return future.result(timeout=INSTAGRAM_INGEST_TIMEOUT_SECONDS)
+        except FuturesTimeoutError as exc:
+            raise InstagramTimeoutError(
+                "Instagram ingestion timed out after 120 seconds (Whisper transcription is slow)"
+            ) from exc
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -102,25 +126,41 @@ def health():
 
 @app.post("/ingest")
 def ingest(body: IngestRequest):
-    youtube_data = get_youtube_data(body.youtube_url, "A")
-    instagram_data = get_instagram_data(body.instagram_url, "B")
+    try:
+        youtube_data = get_youtube_data(body.youtube_url, "A")
+        instagram_data = _run_instagram_ingest(body.instagram_url, "B")
 
-    embed_video(youtube_data)
-    embed_video(instagram_data)
+        embed_video(youtube_data)
+        embed_video(instagram_data)
 
-    video_metadata = {
-        "A": _graph_metadata(youtube_data),
-        "B": _graph_metadata(instagram_data),
-    }
-    active_sessions["main_graph"] = build_graph(video_metadata)
+        video_metadata = {
+            "A": _graph_metadata(youtube_data),
+            "B": _graph_metadata(instagram_data),
+        }
+        active_sessions["main_graph"] = build_graph(video_metadata)
 
-    cached_videos["A"] = _public_video_stats(youtube_data)
-    cached_videos["B"] = _public_video_stats(instagram_data)
+        cached_videos["A"] = _public_video_stats(youtube_data)
+        cached_videos["B"] = _public_video_stats(instagram_data)
 
-    return {
-        "A": cached_videos["A"],
-        "B": cached_videos["B"],
-    }
+        return {
+            "A": cached_videos["A"],
+            "B": cached_videos["B"],
+        }
+    except (
+        YouTubeAPIError,
+        YouTubeTranscriptError,
+        InvalidYouTubeURLError,
+        InvalidInstagramURLError,
+        InstagramIngestionError,
+        InstagramTimeoutError,
+        IngestionError,
+    ) as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ingestion failed: {exc}",
+        ) from exc
 
 
 @app.get("/videos")

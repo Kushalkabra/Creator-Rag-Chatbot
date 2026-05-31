@@ -5,11 +5,18 @@ from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import (
     NoTranscriptFound,
     TranscriptsDisabled,
     VideoUnavailable,
+)
+
+from ingestion.errors import (
+    InvalidYouTubeURLError,
+    YouTubeAPIError,
+    YouTubeTranscriptError,
 )
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -46,7 +53,7 @@ def _extract_video_id(url: str) -> str:
     if match:
         return match.group(1)
 
-    raise ValueError(f"Could not extract video ID from URL: {url}")
+    raise InvalidYouTubeURLError(f"Could not extract video ID from URL: {url}")
 
 
 def _parse_duration_seconds(iso_duration: str) -> int:
@@ -62,33 +69,42 @@ def _parse_duration_seconds(iso_duration: str) -> int:
 
 
 def _fetch_transcript(video_id: str) -> tuple[str, list[dict]]:
-    """Return full transcript text and timestamped segments, or empty on failure."""
+    """Return full transcript text and timestamped segments."""
     try:
         segments = YouTubeTranscriptApi.get_transcript(video_id)
         text = " ".join(segment["text"].strip() for segment in segments)
+        if not text.strip():
+            raise YouTubeTranscriptError("Could not fetch YouTube transcript")
         return text, segments
-    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable):
-        return "", []
-    except Exception:
-        return "", []
+    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable) as exc:
+        raise YouTubeTranscriptError("Could not fetch YouTube transcript") from exc
+    except YouTubeTranscriptError:
+        raise
+    except Exception as exc:
+        raise YouTubeTranscriptError("Could not fetch YouTube transcript") from exc
 
 
 def _fetch_video_metadata(video_id: str) -> dict:
     """Call YouTube Data API v3 for stats and snippet fields."""
     api_key = os.getenv("YOUTUBE_API_KEY")
     if not api_key:
-        raise ValueError("YOUTUBE_API_KEY is not set in environment")
+        raise YouTubeAPIError("YOUTUBE_API_KEY is not set in environment")
 
-    youtube = build("youtube", "v3", developerKey=api_key)
-    response = (
-        youtube.videos()
-        .list(part="snippet,statistics,contentDetails", id=video_id)
-        .execute()
-    )
+    try:
+        youtube = build("youtube", "v3", developerKey=api_key)
+        response = (
+            youtube.videos()
+            .list(part="snippet,statistics,contentDetails", id=video_id)
+            .execute()
+        )
+    except HttpError as exc:
+        raise YouTubeAPIError(
+            f"YouTube API request failed: {exc.reason or 'unknown error'}"
+        ) from exc
 
     items = response.get("items", [])
     if not items:
-        raise ValueError(f"No video found for ID: {video_id}")
+        raise YouTubeAPIError(f"No video found for ID: {video_id}")
 
     item = items[0]
     snippet = item.get("snippet", {})

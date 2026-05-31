@@ -6,6 +6,8 @@ import instaloader
 import whisper
 import yt_dlp
 
+from ingestion.errors import InvalidInstagramURLError, InstagramIngestionError
+
 # Instagram does not offer a public transcript API (unlike YouTube captions).
 # We download audio with yt-dlp, then run OpenAI Whisper locally to get text
 # and word-level timestamps — same role as youtube-transcript-api on YouTube.
@@ -36,7 +38,7 @@ def _extract_shortcode(url: str) -> str:
     if match:
         return match.group(1)
 
-    raise ValueError(f"Could not extract Instagram shortcode from URL: {url}")
+    raise InvalidInstagramURLError(f"Invalid Instagram URL: {url}")
 
 
 def _download_audio(url: str) -> Path:
@@ -67,7 +69,7 @@ def _download_audio(url: str) -> Path:
             candidates[0].rename(AUDIO_PATH)
 
     if not AUDIO_PATH.exists():
-        raise FileNotFoundError(f"Audio file not created at {AUDIO_PATH}")
+        raise InstagramIngestionError("Could not download Instagram reel audio")
 
     return AUDIO_PATH
 
@@ -119,7 +121,10 @@ def _fetch_post_metadata(shortcode: str) -> dict:
         quiet=True,
     )
 
-    post = instaloader.Post.from_shortcode(loader.context, shortcode)
+    try:
+        post = instaloader.Post.from_shortcode(loader.context, shortcode)
+    except instaloader.exceptions.InstaloaderException as exc:
+        raise InvalidInstagramURLError("Invalid Instagram URL") from exc
     caption = post.caption or ""
 
     try:
@@ -168,15 +173,25 @@ def get_instagram_data(url: str, video_label: str) -> dict:
 
     video_label: typically "A" or "B" for comparison workflows.
     """
-    shortcode = _extract_shortcode(url)
-    metadata = _fetch_post_metadata(shortcode)
-
-    audio_path = _download_audio(url)
     try:
-        transcript, transcript_segments = _transcribe_audio(audio_path)
-    finally:
-        if audio_path.exists():
-            audio_path.unlink()
+        shortcode = _extract_shortcode(url)
+        metadata = _fetch_post_metadata(shortcode)
+
+        audio_path = _download_audio(url)
+        try:
+            transcript, transcript_segments = _transcribe_audio(audio_path)
+        finally:
+            if audio_path.exists():
+                audio_path.unlink()
+    except InvalidInstagramURLError:
+        raise
+    except Exception as exc:
+        message = str(exc).lower()
+        if "instagram" in message or "shortcode" in message or "url" in message:
+            raise InvalidInstagramURLError("Invalid Instagram URL") from exc
+        raise InstagramIngestionError(
+            f"Instagram ingestion failed: {exc}"
+        ) from exc
 
     caption = metadata["caption"]
     hashtags = HASHTAG_PATTERN.findall(caption)

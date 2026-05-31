@@ -1,0 +1,197 @@
+export const API_URL =
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+export type VideoMeta = {
+  label: string;
+  url: string;
+  creator: string;
+  views: number;
+  likes: number;
+  comments: number;
+  engagement_rate: number;
+  hashtags: string[];
+  duration: number;
+  upload_date: string;
+};
+
+export type IngestResponse = {
+  A: VideoMeta;
+  B: VideoMeta;
+};
+
+export type ChatSource = {
+  video_id: string;
+  tag: string;
+  chunk_index?: number;
+  source_url?: string;
+  creator?: string;
+  engagement_rate?: number;
+  excerpt?: string;
+};
+
+type RawVideoMeta = {
+  video_label?: string;
+  label?: string;
+  url?: string;
+  creator?: string;
+  views?: number;
+  likes?: number;
+  comments?: number;
+  engagement_rate?: number;
+  hashtags?: string[];
+  duration?: number;
+  upload_date?: string;
+};
+
+function normalizeVideoMeta(raw: RawVideoMeta, fallbackLabel: "A" | "B"): VideoMeta {
+  return {
+    label: raw.label ?? raw.video_label ?? fallbackLabel,
+    url: raw.url ?? "",
+    creator: raw.creator ?? "Unknown",
+    views: raw.views ?? 0,
+    likes: raw.likes ?? 0,
+    comments: raw.comments ?? 0,
+    engagement_rate: raw.engagement_rate ?? 0,
+    hashtags: raw.hashtags ?? [],
+    duration: raw.duration ?? 0,
+    upload_date: raw.upload_date ?? "",
+  };
+}
+
+function sourceTagsFromPayload(sources: ChatSource[]): string[] {
+  const tags = sources.map(
+    (source) => source.tag || `[Video ${source.video_id}]`
+  );
+  return Array.from(new Set(tags));
+}
+
+async function parseApiError(response: Response, fallback: string): Promise<string> {
+  const text = await response.text();
+  if (!text) return fallback;
+
+  try {
+    const json = JSON.parse(text) as { detail?: string | Array<{ msg?: string }> };
+    if (typeof json.detail === "string") return json.detail;
+    if (Array.isArray(json.detail)) {
+      return json.detail
+        .map((item) => item.msg ?? JSON.stringify(item))
+        .join(", ");
+    }
+  } catch {
+    // Plain-text error body from the API.
+  }
+
+  return text;
+}
+
+export async function ingestVideos(
+  youtubeUrl: string,
+  instagramUrl: string
+): Promise<IngestResponse> {
+  const response = await fetch(`${API_URL}/ingest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      youtube_url: youtubeUrl,
+      instagram_url: instagramUrl,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      await parseApiError(response, `Ingest failed (${response.status})`)
+    );
+  }
+
+  const data = (await response.json()) as { A: RawVideoMeta; B: RawVideoMeta };
+  return {
+    A: normalizeVideoMeta(data.A, "A"),
+    B: normalizeVideoMeta(data.B, "B"),
+  };
+}
+
+export async function streamChat(
+  message: string,
+  sessionId: string,
+  onToken: (token: string) => void,
+  onDone: (sources: string[]) => void
+): Promise<void> {
+  const response = await fetch(`${API_URL}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message,
+      session_id: sessionId,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      await parseApiError(response, `Chat failed (${response.status})`)
+    );
+  }
+
+  if (!response.body) {
+    throw new Error("Chat response has no body");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let lastSourceTags: string[] = [];
+  let streamCompleted = false;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+
+        const jsonStr = trimmed.slice(5).trim();
+        if (!jsonStr) continue;
+
+        let payload: { token?: string; sources?: ChatSource[]; done?: boolean };
+        try {
+          payload = JSON.parse(jsonStr) as {
+            token?: string;
+            sources?: ChatSource[];
+            done?: boolean;
+          };
+        } catch {
+          continue;
+        }
+
+        if (payload.done) {
+          streamCompleted = true;
+          onDone(lastSourceTags);
+          return;
+        }
+
+        if (payload.sources?.length) {
+          lastSourceTags = sourceTagsFromPayload(payload.sources);
+        }
+
+        if (payload.token) {
+          onToken(payload.token);
+        }
+      }
+    }
+  } catch (error) {
+    if (!streamCompleted) {
+      if (error instanceof Error) throw error;
+      throw new Error("Network error while streaming chat response");
+    }
+    throw error;
+  }
+
+  if (!streamCompleted) {
+    throw new Error("Network error: chat stream ended unexpectedly");
+  }
+}
