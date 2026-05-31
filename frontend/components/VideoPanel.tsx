@@ -3,7 +3,8 @@
 import { FormEvent, useState } from "react";
 
 import VideoCard from "@/components/VideoCard";
-import { ingestVideos, type IngestResponse } from "@/lib/api";
+import EvalCard from "@/components/EvalCard";
+import { ingestVideos, runEval, type EvalSummary, type IngestResponse } from "@/lib/api";
 
 type VideoPanelProps = {
   videosData: IngestResponse | null;
@@ -20,17 +21,26 @@ export default function VideoPanel({
   const [instagramUrl, setInstagramUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [evalData, setEvalData] = useState<EvalSummary | null>(null);
 
   async function handleAnalyze(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
     setLoading(true);
     setChatEnabled(false);
+    setEvalData(null);
 
     try {
       const data = await ingestVideos(youtubeUrl, instagramUrl);
       setVideosData(data);
       setChatEnabled(true);
+
+      try {
+        const evalResult = await runEval();
+        setEvalData(evalResult);
+      } catch {
+        // Eval is diagnostic; don't block chat if it fails.
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to ingest videos");
     } finally {
@@ -41,6 +51,7 @@ export default function VideoPanel({
   function handleReset() {
     setVideosData(null);
     setChatEnabled(false);
+    setEvalData(null);
     setError(null);
   }
 
@@ -115,9 +126,12 @@ export default function VideoPanel({
       )}
 
       {!loading && videosData !== null && (
-        <div className="flex flex-1 flex-col gap-4 overflow-y-auto lg:flex-row">
-          <VideoCard video={videosData.A} label="A" />
-          <VideoCard video={videosData.B} label="B" />
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto">
+          <div className="flex flex-col gap-4 lg:flex-row">
+            <VideoCard video={videosData.A} label="A" />
+            <VideoCard video={videosData.B} label="B" />
+          </div>
+          {evalData && <EvalCard evalData={evalData} />}
         </div>
       )}
     </div>

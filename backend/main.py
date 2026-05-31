@@ -8,7 +8,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Path
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
@@ -26,6 +26,7 @@ from ingestion.errors import (
 from ingestion.instagram import get_instagram_data
 from ingestion.youtube import get_youtube_data
 from rag.embedder import embed_video
+from rag.eval import run_eval
 from rag.graph import build_graph
 
 INSTAGRAM_INGEST_TIMEOUT_SECONDS = 120
@@ -180,6 +181,29 @@ def get_videos():
     if not cached_videos.get("A") and not cached_videos.get("B"):
         raise HTTPException(status_code=404, detail="No videos ingested yet. Call POST /ingest first.")
     return cached_videos
+
+
+# Retrieval eval runs after ingestion to verify chunk quality.
+# A failing eval (pass_rate < 50%) signals chunking or embedding
+# issues before they silently degrade chat answer quality.
+def _require_videos_for_eval() -> None:
+    if not cached_videos.get("A") or not cached_videos.get("B"):
+        raise HTTPException(
+            status_code=400,
+            detail="Ingest two videos before running eval",
+        )
+
+
+@app.get("/eval", response_model=None)
+def run_retrieval_eval():
+    _require_videos_for_eval()
+    return run_eval(k=4)
+
+
+@app.get("/eval/k/{k}", response_model=None)
+def run_retrieval_eval_with_k(k: int = Path(..., ge=1, le=10)):
+    _require_videos_for_eval()
+    return run_eval(k=k)
 
 
 @app.post("/chat")

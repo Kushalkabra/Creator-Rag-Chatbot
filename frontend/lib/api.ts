@@ -19,6 +19,26 @@ export type IngestResponse = {
   B: VideoMeta;
 };
 
+export type EvalResult = {
+  question: string;
+  passed: boolean;
+  recall_at_k: number;
+  matched_keywords: string[];
+  missing_keywords: string[];
+  video_ids_retrieved: string[];
+  notes: string;
+  retrieved_excerpts: string[];
+};
+
+export type EvalSummary = {
+  pass_rate: number;
+  average_recall_at_k: number;
+  passed: number;
+  total_cases: number;
+  summary: string;
+  results: EvalResult[];
+};
+
 export type ChatSource = {
   video_id: string;
   tag: string;
@@ -108,6 +128,18 @@ export async function ingestVideos(
     A: normalizeVideoMeta(data.A, "A"),
     B: normalizeVideoMeta(data.B, "B"),
   };
+}
+
+export async function runEval(): Promise<EvalSummary> {
+  const response = await fetch(`${API_URL}/eval`);
+
+  if (!response.ok) {
+    throw new Error(
+      await parseApiError(response, `Eval failed (${response.status})`)
+    );
+  }
+
+  return (await response.json()) as EvalSummary;
 }
 
 export async function streamChat(
