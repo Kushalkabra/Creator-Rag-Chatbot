@@ -1,4 +1,7 @@
+import os
 import re
+import shutil
+import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -12,15 +15,71 @@ from ingestion.errors import InvalidInstagramURLError, InstagramIngestionError
 # We download audio with yt-dlp, then run OpenAI Whisper locally to get text
 # and word-level timestamps — same role as youtube-transcript-api on YouTube.
 
-AUDIO_PATH = Path("/tmp/reel_audio.mp3")
+AUDIO_PATH = Path(tempfile.gettempdir()) / "reel_audio.mp3"
 HASHTAG_PATTERN = re.compile(r"#[\w]+")
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 
 _whisper_model = None
+
+
+def _strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_PATTERN.sub("", text)
+
+
+def _find_ffmpeg_dir() -> str | None:
+    """Locate ffmpeg bin directory even if the server started before PATH was updated."""
+    env_path = os.getenv("FFMPEG_PATH")
+    if env_path:
+        candidate = Path(env_path)
+        if (candidate / "ffmpeg.exe").exists() or (candidate / "ffmpeg").exists():
+            return str(candidate)
+        if candidate.name in ("ffmpeg", "ffmpeg.exe") and candidate.exists():
+            return str(candidate.parent)
+
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if ffmpeg_bin:
+        return str(Path(ffmpeg_bin).parent)
+
+    if os.name == "nt":
+        search_roots = [
+            Path.home() / "AppData/Local/Microsoft/WinGet/Packages",
+            Path("C:/ffmpeg/bin"),
+            Path("C:/Program Files/ffmpeg/bin"),
+        ]
+        for root in search_roots:
+            if not root.exists():
+                continue
+            for ffmpeg_exe in root.rglob("ffmpeg.exe"):
+                ffprobe_exe = ffmpeg_exe.with_name("ffprobe.exe")
+                if ffprobe_exe.exists():
+                    return str(ffmpeg_exe.parent)
+
+    return None
+
+
+def _ensure_ffmpeg_available() -> str:
+    ffmpeg_dir = _find_ffmpeg_dir()
+    if ffmpeg_dir:
+        _add_ffmpeg_to_path(ffmpeg_dir)
+        return ffmpeg_dir
+    raise InstagramIngestionError(
+        "ffmpeg is not installed or not on PATH. "
+        "Install from https://ffmpeg.org/download.html, then restart your terminal and backend."
+    )
+
+
+def _add_ffmpeg_to_path(ffmpeg_dir: str) -> None:
+    """Whisper invokes ffmpeg via subprocess and expects it on PATH."""
+    current_path = os.environ.get("PATH", "")
+    path_entries = current_path.split(os.pathsep) if current_path else []
+    if ffmpeg_dir not in path_entries:
+        os.environ["PATH"] = ffmpeg_dir + os.pathsep + current_path
 
 
 def _get_whisper_model():
     global _whisper_model
     if _whisper_model is None:
+        _ensure_ffmpeg_available()
         _whisper_model = whisper.load_model("base")
     return _whisper_model
 
@@ -31,10 +90,10 @@ def _extract_shortcode(url: str) -> str:
     path_parts = [part for part in parsed.path.split("/") if part]
 
     for index, part in enumerate(path_parts):
-        if part in ("reel", "p", "tv") and index + 1 < len(path_parts):
+        if part in ("reel", "reels", "p", "tv") and index + 1 < len(path_parts):
             return path_parts[index + 1]
 
-    match = re.search(r"instagram\.com/(?:reel|p|tv)/([^/?#]+)", url)
+    match = re.search(r"instagram\.com/(?:reels?|p|tv)/([^/?#]+)", url)
     if match:
         return match.group(1)
 
@@ -42,7 +101,8 @@ def _extract_shortcode(url: str) -> str:
 
 
 def _download_audio(url: str) -> Path:
-    """Download reel audio only to /tmp/reel_audio.mp3 via yt-dlp."""
+    """Download reel audio only to a temp mp3 file via yt-dlp."""
+    ffmpeg_dir = _ensure_ffmpeg_available()
     AUDIO_PATH.parent.mkdir(parents=True, exist_ok=True)
     if AUDIO_PATH.exists():
         AUDIO_PATH.unlink()
@@ -51,6 +111,7 @@ def _download_audio(url: str) -> Path:
         "format": "bestaudio",
         "quiet": True,
         "no_warnings": True,
+        "ffmpeg_location": ffmpeg_dir,
         "outtmpl": str(AUDIO_PATH.with_suffix("")),
         "postprocessors": [
             {
@@ -60,8 +121,17 @@ def _download_audio(url: str) -> Path:
         ],
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+    except Exception as exc:
+        message = _strip_ansi(str(exc)).lower()
+        if "ffmpeg" in message or "ffprobe" in message:
+            raise InstagramIngestionError(
+                "ffmpeg is not installed or not on PATH. "
+                "Install from https://ffmpeg.org/download.html, then restart your terminal and backend."
+            ) from exc
+        raise
 
     if not AUDIO_PATH.exists():
         candidates = list(AUDIO_PATH.parent.glob(f"{AUDIO_PATH.stem}.*"))

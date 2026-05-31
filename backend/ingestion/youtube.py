@@ -70,8 +70,17 @@ def _parse_duration_seconds(iso_duration: str) -> int:
 
 def _fetch_transcript(video_id: str) -> tuple[str, list[dict]]:
     """Return full transcript text and timestamped segments."""
+    api = YouTubeTranscriptApi()
     try:
-        segments = YouTubeTranscriptApi.get_transcript(video_id)
+        try:
+            fetched = api.fetch(video_id, languages=("en",))
+        except NoTranscriptFound:
+            # Fall back to any available caption track (auto-generated or other language).
+            transcript_list = api.list(video_id)
+            transcript = next(iter(transcript_list))
+            fetched = transcript.fetch()
+
+        segments = fetched.to_raw_data()
         text = " ".join(segment["text"].strip() for segment in segments)
         if not text.strip():
             raise YouTubeTranscriptError("Could not fetch YouTube transcript")

@@ -5,11 +5,11 @@ from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 
 from rag.embedder import get_retriever
+from rag.llm import get_chat_model
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
@@ -100,7 +100,7 @@ def build_graph(video_metadata: dict[str, Any]):
     (creator/channel_title, engagement_rate, views, likes, creator_followers, etc.).
     """
     retriever = get_retriever()
-    llm = ChatOpenAI(model="gpt-4o-mini", streaming=True)
+    llm = get_chat_model()
 
     def retrieve(state: RAGState) -> dict[str, list[Document]]:
         query = ""

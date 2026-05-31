@@ -1,15 +1,17 @@
+import os
 from pathlib import Path
 
 import chromadb
 from dotenv import load_dotenv
 from langchain_community.vectorstores import Chroma
-from langchain_openai import OpenAIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 CHROMA_PATH = Path(__file__).resolve().parent.parent / "chroma_db"
-COLLECTION_NAME = "video_chunks"
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+COLLECTION_NAME = "video_chunks_bge"
 
 # chunk_size=300 keeps each chunk small enough for precise retrieval (roughly a
 # short paragraph) without diluting relevance. chunk_overlap=50 preserves
@@ -18,8 +20,22 @@ CHUNK_SIZE = 300
 CHUNK_OVERLAP = 50
 
 _chroma_client = chromadb.PersistentClient(path=str(CHROMA_PATH))
-_embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+_embeddings: HuggingFaceEmbeddings | None = None
 _vectorstore: Chroma | None = None
+
+
+def _get_embeddings() -> HuggingFaceEmbeddings:
+    global _embeddings
+    if _embeddings is None:
+        _embeddings = HuggingFaceEmbeddings(
+            model_name=EMBEDDING_MODEL,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+            query_encode_kwargs={
+                "prompt": "Represent this sentence for searching relevant passages: "
+            },
+        )
+    return _embeddings
 
 
 def _get_vectorstore() -> Chroma:
@@ -28,14 +44,14 @@ def _get_vectorstore() -> Chroma:
         _vectorstore = Chroma(
             client=_chroma_client,
             collection_name=COLLECTION_NAME,
-            embedding_function=_embeddings,
+            embedding_function=_get_embeddings(),
         )
     return _vectorstore
 
 
 def embed_video(video_data: dict) -> int:
     """
-    Chunk a video transcript, embed with OpenAI, and persist in ChromaDB.
+    Chunk a video transcript, embed with BGE, and persist in ChromaDB.
 
     Accepts the dict returned by get_youtube_data or get_instagram_data.
     Returns the number of chunks stored.

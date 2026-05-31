@@ -1,9 +1,13 @@
-import json
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
-from typing import Any
 
 from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
+import json
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from typing import Any
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -23,8 +27,6 @@ from ingestion.instagram import get_instagram_data
 from ingestion.youtube import get_youtube_data
 from rag.embedder import embed_video
 from rag.graph import build_graph
-
-load_dotenv(Path(__file__).resolve().parent / ".env")
 
 INSTAGRAM_INGEST_TIMEOUT_SECONDS = 120
 
@@ -124,6 +126,16 @@ def health():
     return {"status": "ok"}
 
 
+def _format_ingest_error(exc: Exception) -> str:
+    message = str(exc).lower()
+    if "groq_api_key" in message or ("groq" in message and "api" in message):
+        return (
+            "Groq API key missing. Set GROQ_API_KEY in backend/.env. "
+            "Get a key at https://console.groq.com"
+        )
+    return f"Ingestion failed: {exc}"
+
+
 @app.post("/ingest")
 def ingest(body: IngestRequest):
     try:
@@ -159,7 +171,7 @@ def ingest(body: IngestRequest):
     except Exception as exc:
         raise HTTPException(
             status_code=400,
-            detail=f"Ingestion failed: {exc}",
+            detail=_format_ingest_error(exc),
         ) from exc
 
 
