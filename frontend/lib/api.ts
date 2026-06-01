@@ -33,9 +33,12 @@ function resolveApiUrl(): string {
 
   // Server-side (build/SSR): talk to backend directly when proxying via rewrites
   if (forceProxy || !isValidExternalBackendUrl(configured)) {
-    const backend = normalizeBaseUrl(
+    let backend = normalizeBaseUrl(
       process.env.BACKEND_URL ?? process.env.RAILWAY_BACKEND_URL ?? ""
     );
+    if (backend && !backend.startsWith("http://") && !backend.startsWith("https://")) {
+      backend = `https://${backend}`;
+    }
     return backend || LOCAL_API_URL;
   }
 
