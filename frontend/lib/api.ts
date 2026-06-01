@@ -1,5 +1,12 @@
-export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+function resolveApiUrl(): string {
+  const raw = (process.env.NEXT_PUBLIC_API_URL ?? "").trim();
+  if (raw) {
+    return raw.replace(/\/$/, "");
+  }
+  return "http://localhost:8000";
+}
+
+export const API_URL = resolveApiUrl();
 
 export type VideoMeta = {
   label: string;
@@ -127,6 +134,14 @@ function sourceTagsFromPayload(sources: ChatSource[]): string[] {
 async function parseApiError(response: Response, fallback: string): Promise<string> {
   const text = await response.text();
   if (!text) return fallback;
+
+  if (text.trimStart().startsWith("<")) {
+    return (
+      "Request reached the Next.js frontend (404 HTML), not the FastAPI backend. " +
+      "Set NEXT_PUBLIC_API_URL to your Railway URL in Vercel (e.g. https://xxx.up.railway.app), " +
+      "then redeploy the frontend — this variable is baked in at build time."
+    );
+  }
 
   try {
     const json = JSON.parse(text) as { detail?: string | Array<{ msg?: string }> };
