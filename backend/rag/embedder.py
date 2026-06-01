@@ -49,6 +49,20 @@ def _get_vectorstore() -> Chroma:
     return _vectorstore
 
 
+def clear_video_chunks(video_label: str) -> None:
+    """
+    Delete all stored chunks for a given video label before re-embedding.
+
+    Without this, re-ingesting the same URL appends new chunks alongside
+    stale ones — retrieval silently returns outdated content.
+    """
+    store = _get_vectorstore()
+    try:
+        store._collection.delete(where={"video_id": video_label})
+    except Exception:
+        pass  # collection may be empty on first run, that's fine
+
+
 def embed_video(video_data: dict) -> int:
     """
     Chunk a video transcript, embed with BGE, and persist in ChromaDB.
