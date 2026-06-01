@@ -31,6 +31,13 @@ from rag.graph import build_graph
 
 INSTAGRAM_INGEST_TIMEOUT_SECONDS = 120
 
+GROQ_INPUT_COST_PER_1M = 0.05
+GROQ_OUTPUT_COST_PER_1M = 0.08
+WHISPER_COST_PER_MINUTE = 0.006
+GPT4O_INPUT_COST_PER_1M = 2.50
+GPT4O_OUTPUT_COST_PER_1M = 10.00
+OPENAI_EMBEDDING_COST_PER_1M = 0.02
+
 app = FastAPI()
 
 app.add_middleware(
@@ -43,6 +50,16 @@ app.add_middleware(
 
 active_sessions: dict[str, Any] = {}
 cached_videos: dict[str, dict[str, Any]] = {"A": {}, "B": {}}
+
+session_metrics: dict[str, Any] = {
+    "embedding_tokens_estimated": 0,
+    "chat_input_tokens_estimated": 0,
+    "chat_output_tokens_estimated": 0,
+    "whisper_minutes": 0.0,
+    "chunks_stored": 0,
+    "chat_turns": 0,
+    "ingestion_count": 0,
+}
 
 
 class IngestRequest(BaseModel):
@@ -127,6 +144,92 @@ def health():
     return {"status": "ok"}
 
 
+def _usd_from_tokens(tokens: int, cost_per_1m: float) -> float:
+    return tokens * cost_per_1m / 1_000_000
+
+
+def _build_metrics_payload() -> dict[str, Any]:
+    embedding_tokens = int(session_metrics["embedding_tokens_estimated"])
+    chat_input_tokens = int(session_metrics["chat_input_tokens_estimated"])
+    chat_output_tokens = int(session_metrics["chat_output_tokens_estimated"])
+    whisper_minutes = float(session_metrics["whisper_minutes"])
+    ingestion_count = int(session_metrics["ingestion_count"])
+
+    chat_usd = _usd_from_tokens(chat_input_tokens, GROQ_INPUT_COST_PER_1M) + _usd_from_tokens(
+        chat_output_tokens, GROQ_OUTPUT_COST_PER_1M
+    )
+    whisper_usd = whisper_minutes * WHISPER_COST_PER_MINUTE
+    embeddings_usd = 0.0
+    total_session_usd = embeddings_usd + chat_usd + whisper_usd
+    cost_per_creator_usd = (
+        total_session_usd / ingestion_count if ingestion_count > 0 else 0.0
+    )
+
+    gpt4o_estimated_usd = (
+        _usd_from_tokens(embedding_tokens, OPENAI_EMBEDDING_COST_PER_1M)
+        + _usd_from_tokens(chat_input_tokens, GPT4O_INPUT_COST_PER_1M)
+        + _usd_from_tokens(chat_output_tokens, GPT4O_OUTPUT_COST_PER_1M)
+        + whisper_usd
+    )
+    gpt4o_per_creator = (
+        gpt4o_estimated_usd / ingestion_count if ingestion_count > 0 else 0.0
+    )
+    savings_usd = gpt4o_estimated_usd - total_session_usd
+    savings_percent = (
+        round((savings_usd / gpt4o_estimated_usd) * 100, 1)
+        if gpt4o_estimated_usd > 0
+        else 0.0
+    )
+
+    scale_keys = (10, 100, 1000, 10000)
+    daily = {str(key): cost_per_creator_usd * key for key in scale_keys}
+    monthly = {str(key): cost_per_creator_usd * key * 30 for key in scale_keys}
+
+    return {
+        "session": {
+            "chunks_stored": int(session_metrics["chunks_stored"]),
+            "chat_turns": int(session_metrics["chat_turns"]),
+            "ingestion_count": ingestion_count,
+            "embedding_tokens_estimated": embedding_tokens,
+            "chat_input_tokens_estimated": chat_input_tokens,
+            "chat_output_tokens_estimated": chat_output_tokens,
+            "whisper_minutes": whisper_minutes,
+        },
+        "cost": {
+            "embeddings_usd": embeddings_usd,
+            "chat_usd": chat_usd,
+            "whisper_usd": whisper_usd,
+            "total_session_usd": total_session_usd,
+            "cost_per_creator_usd": cost_per_creator_usd,
+        },
+        "model_info": {
+            "llm": "llama-3.1-8b-instant (Groq)",
+            "embeddings": "BAAI/bge-small-en-v1.5 (local)",
+            "whisper": "base (local)",
+            "llm_input_cost_per_1m": GROQ_INPUT_COST_PER_1M,
+            "llm_output_cost_per_1m": GROQ_OUTPUT_COST_PER_1M,
+            "embedding_cost_per_1m": 0.0,
+        },
+        "vs_openai_gpt4o": {
+            "estimated_cost_usd": gpt4o_estimated_usd,
+            "our_cost_usd": total_session_usd,
+            "savings_usd": savings_usd,
+            "savings_percent": savings_percent,
+        },
+        "scale_projections": {
+            "cost_per_creator": cost_per_creator_usd,
+            "daily": daily,
+            "monthly": monthly,
+            "vs_gpt4o_monthly_1000_creators": gpt4o_per_creator * 1000 * 30,
+        },
+    }
+
+
+@app.get("/metrics", response_model=None)
+def get_metrics():
+    return _build_metrics_payload()
+
+
 def _format_ingest_error(exc: Exception) -> str:
     message = str(exc).lower()
     if "groq_api_key" in message or ("groq" in message and "api" in message):
@@ -162,13 +265,23 @@ def ingest(body: IngestRequest):
             future_a = executor.submit(embed_video, youtube_data)
             future_b = executor.submit(embed_video, instagram_data)
             try:
-                future_a.result()
-                future_b.result()
+                chunks_a = future_a.result()
+                chunks_b = future_b.result()
             except Exception:
                 for future in (future_a, future_b):
                     if not future.done():
                         future.cancel()
                 raise
+
+        session_metrics["chunks_stored"] = chunks_a + chunks_b
+        session_metrics["embedding_tokens_estimated"] = (chunks_a + chunks_b) * 300
+        session_metrics["whisper_minutes"] = round(
+            float(instagram_data.get("duration") or 0) / 60, 2
+        )
+        session_metrics["ingestion_count"] += 1
+        session_metrics["chat_turns"] = 0
+        session_metrics["chat_input_tokens_estimated"] = 0
+        session_metrics["chat_output_tokens_estimated"] = 0
 
         video_metadata = {
             "A": _graph_metadata(youtube_data),
@@ -262,6 +375,12 @@ async def chat(body: ChatRequest):
                     yield f"data: {json.dumps(payload)}\n\n"
 
         yield f"data: {json.dumps({'done': True})}\n\n"
+
+        session_metrics["chat_turns"] += 1
+        # estimate: system prompt ~500 + 4 chunks * 80 tokens + message ~50
+        session_metrics["chat_input_tokens_estimated"] += 630
+        # estimate: average response length
+        session_metrics["chat_output_tokens_estimated"] += 250
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
