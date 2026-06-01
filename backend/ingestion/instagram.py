@@ -6,13 +6,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import instaloader
-import whisper
 import yt_dlp
+from faster_whisper import WhisperModel
 
 from ingestion.errors import InvalidInstagramURLError, InstagramIngestionError
 
 # Instagram does not offer a public transcript API (unlike YouTube captions).
-# We download audio with yt-dlp, then run OpenAI Whisper locally to get text
+# We download audio with yt-dlp, then run faster-whisper locally to get text
 # and word-level timestamps — same role as youtube-transcript-api on YouTube.
 
 AUDIO_PATH = Path(tempfile.gettempdir()) / "reel_audio.mp3"
@@ -76,11 +76,14 @@ def _add_ffmpeg_to_path(ffmpeg_dir: str) -> None:
         os.environ["PATH"] = ffmpeg_dir + os.pathsep + current_path
 
 
-def _get_whisper_model():
+def _get_whisper_model() -> WhisperModel:
     global _whisper_model
     if _whisper_model is None:
         _ensure_ffmpeg_available()
-        _whisper_model = whisper.load_model("base")
+        # faster-whisper uses CTranslate2 with int8 quantization —
+        # 4-8x faster than openai-whisper on CPU with identical output quality.
+        # most impactful free optimization for the Instagram pipeline.
+        _whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
     return _whisper_model
 
 
@@ -145,38 +148,36 @@ def _download_audio(url: str) -> Path:
 
 
 def _transcribe_audio(audio_path: Path) -> tuple[str, list[dict]]:
-    """Transcribe audio with Whisper; return full text and word-level segments."""
+    """Transcribe audio with faster-whisper; return full text and word-level segments."""
     model = _get_whisper_model()
-    result = model.transcribe(str(audio_path), word_timestamps=True)
+    segments_gen, _info = model.transcribe(str(audio_path), word_timestamps=True)
 
-    transcript = (result.get("text") or "").strip()
-    segments: list[dict] = []
-
-    for segment in result.get("segments", []):
-        words = segment.get("words")
-        if words:
-            for word in words:
-                start = float(word.get("start", 0))
-                end = float(word.get("end", start))
-                segments.append(
+    transcript = ""
+    transcript_segments: list[dict] = []
+    for segment in segments_gen:
+        transcript += segment.text
+        if segment.words:
+            for word in segment.words:
+                transcript_segments.append(
                     {
-                        "text": word.get("word", "").strip(),
-                        "start": start,
-                        "duration": max(end - start, 0),
+                        "text": word.word.strip(),
+                        "start": word.start,
+                        "duration": word.end - word.start,
                     }
                 )
         else:
-            start = float(segment.get("start", 0))
-            end = float(segment.get("end", start))
-            segments.append(
+            start = float(segment.start)
+            end = float(segment.end)
+            transcript_segments.append(
                 {
-                    "text": segment.get("text", "").strip(),
+                    "text": segment.text.strip(),
                     "start": start,
                     "duration": max(end - start, 0),
                 }
             )
 
-    return transcript, segments
+    transcript = transcript.strip()
+    return transcript, transcript_segments
 
 
 def _fetch_post_metadata(shortcode: str) -> dict:
@@ -239,7 +240,7 @@ def _compute_engagement_rate(views: int, likes: int, comments: int) -> float:
 
 def get_instagram_data(url: str, video_label: str) -> dict:
     """
-    Fetch transcript (via audio + Whisper) and metadata for an Instagram reel.
+    Fetch transcript (via audio + faster-whisper) and metadata for an Instagram reel.
 
     video_label: typically "A" or "B" for comparison workflows.
     """

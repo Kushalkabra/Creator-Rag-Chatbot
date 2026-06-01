@@ -12,5 +12,5 @@ chromadb
 youtube-transcript-api
 google-api-python-client
 yt-dlp
-openai-whisper
+faster-whisper
 instaloader
