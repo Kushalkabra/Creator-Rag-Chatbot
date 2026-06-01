@@ -119,7 +119,14 @@ def build_graph(video_metadata: dict[str, Any]):
         retrieved_docs = state.get("retrieved_docs") or []
         system_prompt = _build_system_prompt(retrieved_docs, video_metadata)
 
-        conversation = [SystemMessage(content=system_prompt)] + list(state["messages"])
+        all_messages = list(state["messages"])
+        # Trimming to last 6 messages — MemorySaver still holds full history, but
+        # sending everything to the LLM on every turn grows cost linearly with
+        # conversation length. 6 turns covers follow-up context without runaway
+        # cost at scale.
+        recent_messages = all_messages[-6:] if len(all_messages) > 6 else all_messages
+
+        conversation = [SystemMessage(content=system_prompt)] + recent_messages
 
         content = ""
         for chunk in llm.stream(conversation, config=config):
