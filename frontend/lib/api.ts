@@ -39,6 +39,45 @@ export type EvalSummary = {
   results: EvalResult[];
 };
 
+export type MetricsResponse = {
+  session: {
+    chunks_stored: number;
+    chat_turns: number;
+    ingestion_count: number;
+    embedding_tokens_estimated: number;
+    chat_input_tokens_estimated: number;
+    chat_output_tokens_estimated: number;
+    whisper_minutes: number;
+  };
+  cost: {
+    embeddings_usd: number;
+    chat_usd: number;
+    whisper_usd: number;
+    total_session_usd: number;
+    cost_per_creator_usd: number;
+  };
+  model_info: {
+    llm: string;
+    embeddings: string;
+    whisper: string;
+    llm_input_cost_per_1m: number;
+    llm_output_cost_per_1m: number;
+    embedding_cost_per_1m: number;
+  };
+  vs_openai_gpt4o: {
+    estimated_cost_usd: number;
+    our_cost_usd: number;
+    savings_usd: number;
+    savings_percent: number;
+  };
+  scale_projections: {
+    cost_per_creator: number;
+    daily: Record<string, number>;
+    monthly: Record<string, number>;
+    vs_gpt4o_monthly_1000_creators: number;
+  };
+};
+
 export type ChatSource = {
   video_id: string;
   tag: string;
@@ -128,6 +167,18 @@ export async function ingestVideos(
     A: normalizeVideoMeta(data.A, "A"),
     B: normalizeVideoMeta(data.B, "B"),
   };
+}
+
+export async function fetchMetrics(): Promise<MetricsResponse> {
+  const response = await fetch(`${API_URL}/metrics`);
+
+  if (!response.ok) {
+    throw new Error(
+      await parseApiError(response, `Metrics failed (${response.status})`)
+    );
+  }
+
+  return (await response.json()) as MetricsResponse;
 }
 
 export async function runEval(): Promise<EvalSummary> {
