@@ -16,6 +16,6 @@ def get_chat_model() -> BaseChatModel:
         raise ValueError("GROQ_API_KEY is not set in environment")
     return ChatGroq(
         model=GROQ_MODEL,
-        temperature=0.2,
+        temperature=0.1,
         groq_api_key=api_key,
     )

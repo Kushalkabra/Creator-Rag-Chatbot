@@ -51,14 +51,69 @@ def _format_video_stats(label: str, stats: dict[str, Any]) -> str:
     followers = stats.get("creator_followers")
     if followers is None:
         followers = stats.get("followers", "N/A")
+    comments = stats.get("comments")
+    if comments is None:
+        comments = stats.get("comment_count", "N/A")
 
     return (
         f"{_video_tag(label)} — Creator: {creator} | "
         f"Followers: {followers} | "
         f"Engagement rate: {stats.get('engagement_rate', 'N/A')}% | "
         f"Views: {stats.get('views', 'N/A')} | "
-        f"Likes: {stats.get('likes', 'N/A')}"
+        f"Likes: {stats.get('likes', 'N/A')} | "
+        f"Comments: {comments}"
     )
+
+
+def _metric_float(stats: dict[str, Any], key: str) -> float | None:
+    value = stats.get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_metrics_comparison(stats_a: dict[str, Any], stats_b: dict[str, Any]) -> str:
+    """Pre-computed facts so the LLM does not invert numeric comparisons."""
+    lines: list[str] = []
+
+    er_a = _metric_float(stats_a, "engagement_rate")
+    er_b = _metric_float(stats_b, "engagement_rate")
+    if er_a is not None and er_b is not None:
+        if er_a > er_b:
+            lines.append(
+                f"Engagement rate: [Video A] is HIGHER ({er_a}% > {er_b}% on [Video B])."
+            )
+        elif er_b > er_a:
+            lines.append(
+                f"Engagement rate: [Video B] is HIGHER ({er_b}% > {er_a}% on [Video A])."
+            )
+        else:
+            lines.append(f"Engagement rate: tied at {er_a}%.")
+
+    views_a = _metric_float(stats_a, "views")
+    views_b = _metric_float(stats_b, "views")
+    if views_a is not None and views_b is not None:
+        if views_a > views_b:
+            lines.append(f"Views: [Video A] has MORE ({int(views_a):,} vs {int(views_b):,}).")
+        elif views_b > views_a:
+            lines.append(f"Views: [Video B] has MORE ({int(views_b):,} vs {int(views_a):,}).")
+
+    likes_a = _metric_float(stats_a, "likes")
+    likes_b = _metric_float(stats_b, "likes")
+    if likes_a is not None and likes_b is not None:
+        if likes_a > likes_b:
+            lines.append(f"Likes: [Video A] has MORE ({int(likes_a):,} vs {int(likes_b):,}).")
+        elif likes_b > likes_a:
+            lines.append(f"Likes: [Video B] has MORE ({int(likes_b):,} vs {int(likes_a):,}).")
+
+    lines.append(
+        "Engagement rate = (likes + comments) / views × 100 (from ingestion metadata). "
+        "Do not recalculate or contradict these figures."
+    )
+    return "\n".join(lines)
 
 
 def _build_system_prompt(
@@ -75,20 +130,27 @@ def _build_system_prompt(
             _format_video_stats("B", stats_b),
         ]
     )
+    comparison_block = _format_metrics_comparison(stats_a, stats_b)
 
     return f"""You are an analytical video comparison assistant for two pieces of content (Video A and Video B).
 
 ## Retrieved transcript excerpts
 {context}
 
-## Video metrics
+## Video metrics (authoritative numbers — use exactly as written)
 {stats_block}
 
+## Metric comparison (ground truth — do not contradict)
+{comparison_block}
+
 ## Instructions
+- For views, likes, comments, and engagement rate, use ONLY the Video metrics and Metric comparison sections above. Never claim a lower number is higher.
+- If the user asks why one video got "more engagement", check Metric comparison first: higher engagement rate wins; more views alone is reach, not engagement rate.
 - Always cite sources as [Video A] or [Video B], including chunk context when referencing transcript text (e.g. [Video A] chunk 2).
-- Be analytical: compare engagement metrics, creators, and content themes across both videos.
-- Suggest concrete improvements (hooks, pacing, CTAs, hashtags) grounded in the retrieved chunks and metrics.
+- Use transcript excerpts for hooks, pacing, quotes, and content themes — not for inventing metrics.
+- Suggest concrete improvements (hooks, pacing, CTAs, hashtags) grounded in retrieved chunks and metrics.
 - If retrieved context is empty, say so and answer from metrics only where possible.
+- If the question assumes the wrong winner (e.g. "why did A outperform B on engagement" when B has the higher rate), correct the premise briefly, then explain using the data.
 """
 
 
