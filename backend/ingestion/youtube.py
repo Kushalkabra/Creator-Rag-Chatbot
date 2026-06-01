@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from pathlib import Path
@@ -21,10 +22,36 @@ from ingestion.errors import (
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
+CACHE_DIR.mkdir(exist_ok=True)
+
 HASHTAG_PATTERN = re.compile(r"#[\w]+")
 ISO8601_DURATION_PATTERN = re.compile(
     r"^PT(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?$"
 )
+
+
+def _cache_path(video_id: str) -> Path:
+    return CACHE_DIR / f"youtube_{video_id}.json"
+
+
+def _load_cache(video_id: str) -> dict | None:
+    path = _cache_path(video_id)
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return None
+    return None
+
+
+def _save_cache(video_id: str, data: dict) -> None:
+    try:
+        # don't cache transcript_segments — too large, regenerate
+        cacheable = {k: v for k, v in data.items() if k != "transcript_segments"}
+        _cache_path(video_id).write_text(json.dumps(cacheable))
+    except Exception:
+        pass
 
 
 def _extract_video_id(url: str) -> str:
@@ -150,6 +177,16 @@ def get_youtube_data(url: str, video_label: str) -> dict:
     video_label: typically "A" or "B" for comparison workflows.
     """
     video_id = _extract_video_id(url)
+
+    # YouTube Data API has 10K unit daily quota. caching responses by video_id
+    # means repeat ingests (demo reruns, same creator across sessions) hit disk
+    # instead of the API. critical at 1K creators/day where quota could be exhausted.
+    cached = _load_cache(video_id)
+    if cached:
+        cached["transcript_segments"] = []
+        cached["video_label"] = video_label
+        return cached
+
     transcript, transcript_segments = _fetch_transcript(video_id)
     metadata = _fetch_video_metadata(video_id)
 
@@ -161,7 +198,7 @@ def get_youtube_data(url: str, video_label: str) -> dict:
         metadata["comment_count"],
     )
 
-    return {
+    return_dict = {
         "video_label": video_label,
         "url": url,
         "video_id": video_id,
@@ -177,3 +214,5 @@ def get_youtube_data(url: str, video_label: str) -> dict:
         "hashtags": hashtags,
         "engagement_rate": engagement_rate,
     }
+    _save_cache(video_id, return_dict)
+    return return_dict
