@@ -1,0 +1,20 @@
+# Render blueprint — backend API (Docker)
+# Frontend: deploy separately on Vercel (see docs/DEPLOY.md)
+services:
+  - type: web
+    name: creator-rag-api
+    runtime: docker
+    rootDir: backend
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: YOUTUBE_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
+      - key: EMBEDDING_MODEL
+        value: BAAI/bge-small-en-v1.5
+      - key: ALLOWED_ORIGINS
+        sync: false

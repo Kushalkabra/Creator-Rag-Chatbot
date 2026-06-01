@@ -1,0 +1,5 @@
+.env
+backend/.env
+backend/.venv/
+backend/chroma_db/
+backend/cache/

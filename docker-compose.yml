@@ -1,0 +1,29 @@
+# Oracle VM / any Linux host — run from repo root:
+#   cp .env.oracle.example .env
+#   # edit .env (PUBLIC_IP, keys in backend/.env)
+#   docker compose up -d --build
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+    volumes:
+      - ./backend/chroma_db:/app/chroma_db
+      - ./backend/cache:/app/cache
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped

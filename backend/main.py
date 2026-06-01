@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any
 
@@ -38,11 +39,19 @@ GPT4O_INPUT_COST_PER_1M = 2.50
 GPT4O_OUTPUT_COST_PER_1M = 10.00
 OPENAI_EMBEDDING_COST_PER_1M = 0.02
 
+_DEFAULT_CORS_ORIGINS = "http://localhost:3000"
+
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv("ALLOWED_ORIGINS", _DEFAULT_CORS_ORIGINS)
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
