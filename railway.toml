@@ -1,9 +1,10 @@
-# Railway — set service root directory to "backend" in the dashboard
-# or deploy with: railway up (from backend/)
+# Railway — builds from repo root using ./Dockerfile (copies backend/)
+# Alternative: set service Root Directory to "backend" and use backend/Dockerfile
 
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
+watchPatterns = ["backend/**"]
 
 [deploy]
 healthcheckPath = "/health"
