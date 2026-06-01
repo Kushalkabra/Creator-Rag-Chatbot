@@ -1,9 +1,45 @@
-function resolveApiUrl(): string {
-  const raw = (process.env.NEXT_PUBLIC_API_URL ?? "").trim();
-  if (raw) {
-    return raw.replace(/\/$/, "");
+const LOCAL_API_URL = "http://localhost:8000";
+
+function normalizeBaseUrl(url: string): string {
+  return url.trim().replace(/\/$/, "");
+}
+
+function isValidExternalBackendUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false;
+    }
+    if (typeof window !== "undefined" && parsed.origin === window.location.origin) {
+      // e.g. NEXT_PUBLIC_API_URL mistakenly set to the Vercel site URL
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
   }
-  return "http://localhost:8000";
+}
+
+function resolveApiUrl(): string {
+  const configured = normalizeBaseUrl(process.env.NEXT_PUBLIC_API_URL ?? "");
+  const forceProxy = process.env.NEXT_PUBLIC_USE_API_PROXY === "true";
+
+  if (typeof window !== "undefined") {
+    if (forceProxy || !isValidExternalBackendUrl(configured)) {
+      return "/api";
+    }
+    return configured;
+  }
+
+  // Server-side (build/SSR): talk to backend directly when proxying via rewrites
+  if (forceProxy || !isValidExternalBackendUrl(configured)) {
+    const backend = normalizeBaseUrl(
+      process.env.BACKEND_URL ?? process.env.RAILWAY_BACKEND_URL ?? ""
+    );
+    return backend || LOCAL_API_URL;
+  }
+
+  return configured;
 }
 
 export const API_URL = resolveApiUrl();
@@ -138,8 +174,9 @@ async function parseApiError(response: Response, fallback: string): Promise<stri
   if (text.trimStart().startsWith("<")) {
     return (
       "Request reached the Next.js frontend (404 HTML), not the FastAPI backend. " +
-      "Set NEXT_PUBLIC_API_URL to your Railway URL in Vercel (e.g. https://xxx.up.railway.app), " +
-      "then redeploy the frontend — this variable is baked in at build time."
+      "On Vercel set BACKEND_URL to your Railway URL (e.g. https://xxx.up.railway.app) " +
+      "and redeploy — the app proxies /api/* to that host. " +
+      "Remove NEXT_PUBLIC_API_URL if it points at your Vercel domain."
     );
   }
 
